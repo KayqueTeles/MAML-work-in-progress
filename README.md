@@ -1,5 +1,7 @@
 # MAML-work-in-progress
 
+I DO NOT OWN ANY CODE LINES ON THIS REPOSITORY
+
 INGREDIENTES:
 
 python==2.7 numpy tensorflow==1.3.0. matplotlib (creio que os demais pacotes já sejam internos aos python 2.7)
