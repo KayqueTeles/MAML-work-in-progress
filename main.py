@@ -192,7 +192,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     plt.ylabel('Loss')
     plt.xlabel('Iteration')
     plt.legend(['Pre Loss', 'Post Loss'], loc='upper left')
-    plt.savefig("meta_loss_01.png")
+    plt.savefig("meta_loss_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
     ######################3
 
     saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
@@ -257,11 +257,11 @@ def test(model, saver, sess, exp_string, data_generator, test_num_updates=None):
     plt.xticks(x2, lis)
     plt.xticks(rotation=90)
     ax = plt.gca()
-    for label in ax.get_xaxis().get_ticklabels()[::2]:     
+    for label in ax.get_xaxis().get_ticklabels()[::1000]:     
         label.set_visible(False)
     plt.ylabel('Accuracy')
     plt.xlabel('Iteration')
-    plt.savefig("meta_val_01.png")
+    plt.savefig("meta_acc_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
     ######################3
 
     out_filename = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.csv'
@@ -310,10 +310,8 @@ def main():
                 print(' ** Importing when not in metatrain_iterations.')
                 if FLAGS.train:
                     data_generator = DataGenerator(FLAGS.update_batch_size+15, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
-                    print(' ** data_generator: ' data_generator)
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
-                    print(' ** data_generator: ' data_generator)
             else:
                 data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
 
