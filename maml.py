@@ -3,6 +3,7 @@ from __future__ import print_function
 import numpy as np
 import sys
 import tensorflow as tf
+
 try:
     import special_grads
 except KeyError as e:

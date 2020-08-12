@@ -1,3 +1,14 @@
+# pip install tensorflow==1.13.2
+# pip install tensorflow-gpu==1.13.2
+# pip install numpy
+# pip install matplotlib
+# pip install opencv-python
+# pip install tqdm
+# pip install Pillow
+# pip install miniimagenettools
+
+# scp -P 13900  C:\Anaconda3-2020.07-Linux-x86_64.sh  icaro@152.84.201.238:/home/icaro
+
 """
 Usage Instructions:
     10-shot sinusoid:
@@ -52,7 +63,8 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string('datasource', 'sinusoid', 'sinusoid or omniglot or miniimagenet')
 flags.DEFINE_integer('num_classes', 2, 'number of classes used in classification (e.g. 5-way classification).')
 # oracle means task id is input (only suitable for sinusoid)
-flags.DEFINE_string('baseline', None, 'oracle, or None')
+flags.DEFINE_string('baseline', None, 'oracle')
+# flags.DEFINE_string('baseline', None, 'oracle, or None')
 
 ## Training options
 flags.DEFINE_integer('pretrain_iterations', 0, 'number of pre-training iterations.')
@@ -310,10 +322,10 @@ def main():
                 print(' ** Importing when not in metatrain_iterations.')
                 if FLAGS.train:
                     data_generator = DataGenerator(FLAGS.update_batch_size+15, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
-                    print(' ** data_generator: ' data_generator)
+                    print(' ** data_generator: ', data_generator)
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
-                    print(' ** data_generator: ' data_generator)
+                    print(' ** data_generator: ', data_generator)
             else:
                 data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
 

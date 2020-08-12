@@ -17,6 +17,8 @@ from PIL import Image
 
 path_to_images = 'images/'
 
+path_to_pkl_ = 'images/'
+
 all_images = glob.glob(path_to_images + '*')
 
 # Resize images
