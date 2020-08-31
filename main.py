@@ -49,19 +49,19 @@ from tensorflow.python.platform import flags
 FLAGS = flags.FLAGS
 
 ## Dataset/method options
-flags.DEFINE_string('datasource', 'sinusoid', 'sinusoid or omniglot or miniimagenet')
+flags.DEFINE_string('datasource', 'miniimagenet', 'sinusoid or omniglot or miniimagenet')
 flags.DEFINE_integer('num_classes', 2, 'number of classes used in classification (e.g. 5-way classification).')
 # oracle means task id is input (only suitable for sinusoid)
 flags.DEFINE_string('baseline', None, 'oracle, or None')
 
 ## Training options
 flags.DEFINE_integer('pretrain_iterations', 0, 'number of pre-training iterations.')
-flags.DEFINE_integer('metatrain_iterations', 15000, 'number of metatraining iterations.') # 15k for omniglot, 50k for sinusoid
-flags.DEFINE_integer('meta_batch_size', 25, 'number of tasks sampled per meta-update')
-flags.DEFINE_float('meta_lr', 0.001, 'the base learning rate of the generator')
-flags.DEFINE_integer('update_batch_size', 5, 'number of examples used for inner gradient update (K for K-shot learning).')
-flags.DEFINE_float('update_lr', 1e-3, 'step size alpha for inner gradient update.') # 0.1 for omniglot
-flags.DEFINE_integer('num_updates', 1, 'number of inner gradient updates during training.')
+flags.DEFINE_integer('metatrain_iterations', 60000, 'number of metatraining iterations.') # 15k for omniglot, 50k for sinusoid
+flags.DEFINE_integer('meta_batch_size', 4, 'number of tasks sampled per meta-update')
+flags.DEFINE_float('meta_lr', 0.01, 'the base learning rate of the generator')
+flags.DEFINE_integer('update_batch_size', 10, 'number of examples used for inner gradient update (K for K-shot learning).')
+flags.DEFINE_float('update_lr', 1e-2, 'step size alpha for inner gradient update.') # 0.1 for omniglot
+flags.DEFINE_integer('num_updates', 5, 'number of inner gradient updates during training.')
 
 ## Model options
 flags.DEFINE_string('norm', 'batch_norm', 'batch_norm, layer_norm, or None')
@@ -81,200 +81,207 @@ flags.DEFINE_integer('train_update_batch_size', -1, 'number of examples used for
 flags.DEFINE_float('train_update_lr', -1, 'value of inner gradient step step during training. (use if you want to test with a different value)') # 0.1 for omniglot
 
 def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
-    with tf.device("/GPU:0"):
-        print('\n ** Starting main.py training.')
-        SUMMARY_INTERVAL = 100
-        SAVE_INTERVAL = 1000
-        if FLAGS.datasource == 'sinusoid':
-            PRINT_INTERVAL = 1000
-            TEST_PRINT_INTERVAL = PRINT_INTERVAL*5
+    print('\n ** Starting main.py training.')
+    SUMMARY_INTERVAL = 100
+    SAVE_INTERVAL = 1000
+    if FLAGS.datasource == 'sinusoid':
+        PRINT_INTERVAL = 1000
+        TEST_PRINT_INTERVAL = PRINT_INTERVAL*5
+    else:
+        PRINT_INTERVAL = 100
+        TEST_PRINT_INTERVAL = PRINT_INTERVAL*5
+
+    if FLAGS.log:
+        train_writer = tf.summary.FileWriter(FLAGS.logdir + '/' + exp_string, sess.graph)
+    print(' ** Done initializing, starting training.')
+    prelosses, postlosses = [], []
+
+    num_classes = data_generator.num_classes # for classification, 1 otherwise
+    multitask_weights, reg_weights = [], []
+    iterlist, histpreloss, histposloss = [], [], []
+
+    for itr in range(resume_itr, FLAGS.pretrain_iterations + FLAGS.metatrain_iterations):
+        feed_dict = {}
+        if 'generate' in dir(data_generator):
+            batch_x, batch_y, amp, phase = data_generator.generate()
+
+            if FLAGS.baseline == 'oracle':
+                batch_x = np.concatenate([batch_x, np.zeros([batch_x.shape[0], batch_x.shape[1], 2])], 2)
+                for i in range(FLAGS.meta_batch_size):
+                    batch_x[i, :, 1] = amp[i]
+                    batch_x[i, :, 2] = phase[i]
+
+            inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
+            labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
+            inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :] # b used for testing
+            labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
+            feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb}
+
+        if itr < FLAGS.pretrain_iterations:
+            input_tensors = [model.pretrain_op]
         else:
-            PRINT_INTERVAL = 100
-            TEST_PRINT_INTERVAL = PRINT_INTERVAL*5
+            input_tensors = [model.metatrain_op]
 
-        if FLAGS.log:
-            train_writer = tf.summary.FileWriter(FLAGS.logdir + '/' + exp_string, sess.graph)
-        print(' ** Done initializing, starting training.')
-        prelosses, postlosses = [], []
+        if (itr % SUMMARY_INTERVAL == 0 or itr % PRINT_INTERVAL == 0):
+            input_tensors.extend([model.summ_op, model.total_loss1, model.total_losses2[FLAGS.num_updates-1]])
+            if model.classification:
+                input_tensors.extend([model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]])
 
-        num_classes = data_generator.num_classes # for classification, 1 otherwise
-        multitask_weights, reg_weights = [], []
-        iterlist, histpreloss, histposloss = [], [], []
+        result = sess.run(input_tensors, feed_dict)
 
-        for itr in range(resume_itr, FLAGS.pretrain_iterations + FLAGS.metatrain_iterations):
-            feed_dict = {}
-            if 'generate' in dir(data_generator):
-                batch_x, batch_y, amp, phase = data_generator.generate()
+        if itr % SUMMARY_INTERVAL == 0:
+            prelosses.append(result[-2])
+            if FLAGS.log:
+                train_writer.add_summary(result[1], itr)
+            postlosses.append(result[-1])
 
-                if FLAGS.baseline == 'oracle':
-                    batch_x = np.concatenate([batch_x, np.zeros([batch_x.shape[0], batch_x.shape[1], 2])], 2)
-                    for i in range(FLAGS.meta_batch_size):
-                        batch_x[i, :, 1] = amp[i]
-                        batch_x[i, :, 2] = phase[i]
-
-                inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
-                labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
-                inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :] # b used for testing
-                labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
-                feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb}
-    
+        if (itr!=0) and itr % PRINT_INTERVAL == 0:
             if itr < FLAGS.pretrain_iterations:
-                input_tensors = [model.pretrain_op]
+                print_str = ' ** Pretrain Iteration ' + str(itr)
             else:
-                input_tensors = [model.metatrain_op]
-    
-            if (itr % SUMMARY_INTERVAL == 0 or itr % PRINT_INTERVAL == 0):
-                input_tensors.extend([model.summ_op, model.total_loss1, model.total_losses2[FLAGS.num_updates-1]])
-                if model.classification:
-                    input_tensors.extend([model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]])
-
-            result = sess.run(input_tensors, feed_dict)
-
-            if itr % SUMMARY_INTERVAL == 0:
-                prelosses.append(result[-2])
-                if FLAGS.log:
-                    train_writer.add_summary(result[1], itr)
-                postlosses.append(result[-1])
-    
-            if (itr!=0) and itr % PRINT_INTERVAL == 0:
-                if itr < FLAGS.pretrain_iterations:
-                    print_str = 'Pretrain Iteration ' + str(itr)
-                else:
-                    print_str = 'Iteration ' + str(itr - FLAGS.pretrain_iterations)
-                print_str += ': ' + str(np.mean(prelosses)) + ', ' + str(np.mean(postlosses))
+                print_str = ' ** Iteration ' + str(itr - FLAGS.pretrain_iterations)
+            print_str += ': ' + str(np.mean(prelosses)) + ', ' + str(np.mean(postlosses))
             #print(print_str)
             ########
-                iterlist = np.append(iterlist, str(itr - FLAGS.pretrain_iterations))
-                histpreloss = np.append(histpreloss, np.mean(prelosses))
-                histposloss = np.append(histposloss, np.mean(postlosses))
-                #print(iterlist, histpreloss, histposloss)
+            iterlist = np.append(iterlist, str(itr - FLAGS.pretrain_iterations))
+            histpreloss = np.append(histpreloss, np.mean(prelosses))
+            histposloss = np.append(histposloss, np.mean(postlosses))
+            #print(iterlist, histpreloss, histposloss)
             ########
-                prelosses, postlosses = [], []
+            prelosses, postlosses = [], []
 
-            if (itr!=0) and itr % SAVE_INTERVAL == 0:
-                saver.save(sess, FLAGS.logdir + '/' + exp_string + '/model' + str(itr))
+        if (itr!=0) and itr % SAVE_INTERVAL == 0:
+            saver.save(sess, FLAGS.logdir + '/' + exp_string + '/model' + str(itr))
 
         # sinusoid is infinite data, so no need to test on meta-validation set.
-            if (itr!=0) and itr % TEST_PRINT_INTERVAL == 0 and FLAGS.datasource !='sinusoid':
-                if 'generate' not in dir(data_generator):
-                    feed_dict = {}
-                    if model.classification:
-                        input_tensors = [model.metaval_total_accuracy1, model.metaval_total_accuracies2[FLAGS.num_updates-1], model.summ_op]
-                    else:
-                        input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[FLAGS.num_updates-1], model.summ_op]
+        if (itr!=0) and itr % TEST_PRINT_INTERVAL == 0 and FLAGS.datasource !='sinusoid':
+            if 'generate' not in dir(data_generator):
+                feed_dict = {}
+                if model.classification:
+                    input_tensors = [model.metaval_total_accuracy1, model.metaval_total_accuracies2[FLAGS.num_updates-1], model.summ_op]
                 else:
-                    batch_x, batch_y, amp, phase = data_generator.generate(train=False)
-                    inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
-                    inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :]
-                    labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
-                    labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
-                    feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
-                    if model.classification:
-                        input_tensors = [model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]]
-                    else:
-                        input_tensors = [model.total_loss1, model.total_losses2[FLAGS.num_updates-1]]
+                    input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[FLAGS.num_updates-1], model.summ_op]
+            else:
+                batch_x, batch_y, amp, phase = data_generator.generate(train=False)
+                inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
+                inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :]
+                labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
+                labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
+                feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
+                if model.classification:
+                    input_tensors = [model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]]
+                else:
+                    input_tensors = [model.total_loss1, model.total_losses2[FLAGS.num_updates-1]]
 
-                result = sess.run(input_tensors, feed_dict)
-                print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
+            result = sess.run(input_tensors, feed_dict)
+            print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
 
-        saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
-        ####################33
-    lis = range(0,len(histpreloss),1) 
+    if FLAGS.train:
+    ####################33
+        lis = range(0,len(histpreloss),1) 
     #plt.figure()    
     #plt.ylim([0,1])
-    x2 = np.arange(len(iterlist))
-    plt.plot(x2, histpreloss)
-    plt.plot(x2, histposloss)
-    plt.xticks(x2, iterlist)
-    plt.xticks(rotation=90)
-    ax = plt.gca()
-    for label in ax.get_xaxis().get_ticklabels()[::2]:     
-        label.set_visible(False)
-    plt.title('Mean Loss for Meta-train Iterations')
-    plt.ylabel('Loss')
-    plt.xlabel('Iteration')
-    plt.legend(['Pre Loss', 'Post Loss'], loc='upper left')
-    plt.savefig("meta_loss_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
+        x2 = np.arange(len(iterlist))
+        #print(' ** ITERLIST: ', iterlist)
+        #print(' ** x2: ', x2)
+        plt.plot(x2, histpreloss)
+        plt.plot(x2, histposloss)
+        plt.xticks(x2, iterlist)
+        plt.xticks(rotation=90)
+        ax = plt.gca()
+        for label in ax.get_xaxis().get_ticklabels()[::2]:     
+            label.set_visible(False)
+        plt.title('Mean Loss for Meta-train Iterations')
+        plt.ylabel('Loss')
+        plt.xlabel('Iteration')
+        plt.legend(['Pre Loss', 'Post Loss'], loc='upper left')
+        plt.savefig("meta_loss_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
     ######################3
+
+    saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
 
 # calculated for omniglot
 NUM_TEST_POINTS = 600
 
 def test(model, saver, sess, exp_string, data_generator, test_num_updates=None):
-    with tf.device("/GPU:0"):
-        num_classes = data_generator.num_classes # for classification, 1 otherwise
+    print('\n ** Starting test step...')
+    num_classes = data_generator.num_classes # for classification, 1 otherwise
 
-        np.random.seed(1)
-        random.seed(1)
+    np.random.seed(1)
+    random.seed(1)
 
-        metaval_accuracies = []
+    metaval_accuracies = []
+    print(' ** NUM_TEST_POINTS: %s' % NUM_TEST_POINTS)
 
-        for _ in range(NUM_TEST_POINTS):
-            if 'generate' not in dir(data_generator):
-                feed_dict = {}
-                feed_dict = {model.meta_lr : 0.0}
-            else:
-                batch_x, batch_y, amp, phase = data_generator.generate(train=False)
+    for _ in range(NUM_TEST_POINTS):
+        if 'generate' not in dir(data_generator):
+            feed_dict = {}
+            feed_dict = {model.meta_lr : 0.0}
+            #print(' ** feed_dict', feed_dict)
+        else:
+            batch_x, batch_y, amp, phase = data_generator.generate(train=False)
+            print(' ** NUM_TEST_POINTS > BATCH_X')
 
-                if FLAGS.baseline == 'oracle': # NOTE - this flag is specific to sinusoid
-                    batch_x = np.concatenate([batch_x, np.zeros([batch_x.shape[0], batch_x.shape[1], 2])], 2)
-                    batch_x[0, :, 1] = amp[0]
-                    batch_x[0, :, 2] = phase[0]
+            if FLAGS.baseline == 'oracle': # NOTE - this flag is specific to sinusoid
+                batch_x = np.concatenate([batch_x, np.zeros([batch_x.shape[0], batch_x.shape[1], 2])], 2)
+                batch_x[0, :, 1] = amp[0]
+                batch_x[0, :, 2] = phase[0]
 
-                inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
-                inputb = batch_x[:,num_classes*FLAGS.update_batch_size:, :]
-                labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
-                labelb = batch_y[:,num_classes*FLAGS.update_batch_size:, :]
+            inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
+            inputb = batch_x[:,num_classes*FLAGS.update_batch_size:, :]
+            labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
+            labelb = batch_y[:,num_classes*FLAGS.update_batch_size:, :]
 
-                feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
+            feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
 
-            if model.classification:
-                result = sess.run([model.metaval_total_accuracy1] + model.metaval_total_accuracies2, feed_dict)
-            else:  # this is for sinusoid
-                result = sess.run([model.total_loss1] +  model.total_losses2, feed_dict)
-            print(result)
-            metaval_accuracies.append(result)
+        if model.classification:
+            result = sess.run([model.metaval_total_accuracy1] + model.metaval_total_accuracies2, feed_dict)
+        else:  # this is for sinusoid
+            result = sess.run([model.total_loss1] +  model.total_losses2, feed_dict)
+        metaval_accuracies.append(result)
 
-        metaval_accuracies = np.array(metaval_accuracies)
-        means = np.mean(metaval_accuracies, 0)
-        stds = np.std(metaval_accuracies, 0)
-        ci95 = 1.96*stds/np.sqrt(NUM_TEST_POINTS)
+    metaval_accuracies = np.array(metaval_accuracies)
+    means = np.mean(metaval_accuracies, 0)
+    stds = np.std(metaval_accuracies, 0)
+    ci95 = 1.96*stds/np.sqrt(NUM_TEST_POINTS)
     #try:
     #    highdev = means+stds
     #    lowdev = means-stds
     #except:
     #s    pass
 
-        print(' ** Mean validation accuracy/loss, stddev, and confidence intervals')
-        print((means, stds, ci95))
+    print(' ** Mean validation accuracy/loss, stddev, and confidence intervals')
+    print((means, stds, ci95))
     ####################33
-        lis = range(0,len(means),1) 
-        x2 = np.arange(len(lis))
+    lis = range(0,len(means),1) 
+    x2 = np.arange(len(lis))
     #plt.figure()    
-        plt.xlim([0,len(means)])
-        plt.ylim([0,1])
-        plt.plot(x2, means)
-        plt.title('Mean Validation Accuracy for Meta-train Iterations')
-        plt.xticks(x2, lis)
-        plt.xticks(rotation=90)
-        ax = plt.gca()
-        for label in ax.get_xaxis().get_ticklabels()[::1000]:     
-            label.set_visible(False)
-        plt.ylabel('Accuracy')
-        plt.xlabel('Iteration')
-        plt.savefig("meta_acc_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
+    plt.xlim([0,len(means)])
+    plt.ylim([0,1])
+    plt.plot(x2, means)
+    #print(' ** ITERLIST: ', iterlist)
+    #print(' ** x2: ', x2)
+    plt.title('Mean Validation Accuracy for Meta-train Iterations')
+    plt.xticks(x2, lis)
+    plt.xticks(rotation=90)
+    ax = plt.gca()
+    for label in ax.get_xaxis().get_ticklabels()[::1000]:     
+        label.set_visible(False)
+    plt.ylabel('Accuracy')
+    plt.xlabel('Iteration')
+    plt.savefig("meta_acc_batch_%s_numc_%s_numupdates_%s.png" % (FLAGS.update_batch_size, FLAGS.num_classes, FLAGS.num_updates))
     ######################3
 
-        out_filename = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.csv'
-        out_pkl = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.pkl'
-        with open(out_pkl, 'wb') as f:
-            pickle.dump({'mses': metaval_accuracies}, f)
-        with open(out_filename, 'w') as f:
-            writer = csv.writer(f, delimiter=',')
-            writer.writerow(['update'+str(i) for i in range(len(means))])
-            writer.writerow(means)
-            writer.writerow(stds)
-            writer.writerow(ci95)
+    out_filename = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.csv'
+    out_pkl = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.pkl'
+    with open(out_pkl, 'wb') as f:
+        pickle.dump({'mses': metaval_accuracies}, f)
+    with open(out_filename, 'w') as f:
+        writer = csv.writer(f, delimiter=',')
+        writer.writerow(['update'+str(i) for i in range(len(means))])
+        writer.writerow(means)
+        writer.writerow(stds)
+        writer.writerow(ci95)
 
 def main():
     print('\n ** Initializing main.py program...')
@@ -284,11 +291,13 @@ def main():
         else:
             test_num_updates = 10
     else:
+        print(' -- datasource == "miniimagenet"')
         if FLAGS.datasource == 'miniimagenet':
             if FLAGS.train == True:
                 test_num_updates = 1  # eval on at least one update during training
             else:
                 test_num_updates = 10
+            print(' -- test_num_updates = %s.' % test_num_updates)
         else:
             test_num_updates = 10
 
@@ -296,29 +305,35 @@ def main():
         orig_meta_batch_size = FLAGS.meta_batch_size
         # always use meta batch size of 1 when testing.
         FLAGS.meta_batch_size = 1
+    print(' -- train = %s' % FLAGS.train)
 
     if FLAGS.datasource == 'sinusoid':
         data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)
     else:
         print(' ** Importing data_generator from DataGenerator class.')
         if FLAGS.metatrain_iterations == 0 and FLAGS.datasource == 'miniimagenet':
-            print(' ** Importing when not in metatrain_iterations.')
+            print(' -- metatrain_iterations: %s.' % FLAGS.metatrain_iterations)
             assert FLAGS.meta_batch_size == 1
             assert FLAGS.update_batch_size == 1
             data_generator = DataGenerator(1, FLAGS.meta_batch_size)  # only use one datapoint,
+            print(' -- data_generator = ', data_generator)
         else:
             if FLAGS.datasource == 'miniimagenet': # TODO - use 15 val examples for imagenet?
-                print(' ** Importing when not in metatrain_iterations.')
+                print(' -- not in metatrain_iterations path 1.')
                 if FLAGS.train:
                     data_generator = DataGenerator(FLAGS.update_batch_size+15, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+                    print(' -- data_generator from FLAGS.train = %s.' % FLAGS.train)
                 else:
                     data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+                    print(' -- data_generator from FLAGS.train = %s.' % FLAGS.train)
+                print(' -- data_generator = %s.' % data_generator)
             else:
                 data_generator = DataGenerator(FLAGS.update_batch_size*2, FLAGS.meta_batch_size)  # only use one datapoint for testing to save memory
+            print(' -- data_generator outside path2 = %s.' % data_generator)
 
     print(' ** Finished data importion.')
     dim_output = data_generator.dim_output
-    print(' ** dim_output:', dim_output)
+    print(' -- dim_output:', dim_output)
     if FLAGS.baseline == 'oracle':
         assert FLAGS.datasource == 'sinusoid'
         dim_input = 3
@@ -326,14 +341,15 @@ def main():
         FLAGS.metatrain_iterations = 0
     else:
         dim_input = data_generator.dim_input
-        print(' ** dim_input:', dim_output)
+        print(' -- dim_input:', dim_input)
 
     if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'omniglot':
         tf_data_load = True
         num_classes = data_generator.num_classes
-        print(' ** num_classes:', num_classes)
+        print(' -- num_classes:', num_classes)
 
         if FLAGS.train: # only construct training model if needed
+            print(' -- FLAGS.train = true? -> %s' % FLAGS.train)
             random.seed(5)
             image_tensor, label_tensor = data_generator.make_data_tensor()
             inputa = tf.slice(image_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
@@ -341,6 +357,23 @@ def main():
             labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
             labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
             input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+            print(' -- RANDOM.SEED = 5')
+            print(' -- image_tensor = %s' % image_tensor)
+            print(' -- label_tensor = %s' % label_tensor)
+            print(' -- inputa = %s' % inputa)
+            print(' -- inputa[1] = %s' % inputa[1])
+            print(' -- inputa[:,1,:] = %s' % inputa[:,1,:])
+            print(' -- inputa[2] = %s' % inputa[2])
+            print(' -- inputb = %s' % inputb)
+            print(' -- labela = %s' % labela)
+            print(' -- labela[0] = %s' % labela[0])
+            print(' -- labela[:,:,0] = %s' % labela[:,:,0])
+            print(' -- labela[1] = %s' % labela[1])
+            print(' -- labelb = %s' % labelb)
+            print(' -- labelb[0] = %s' % labelb[0])
+            print(' -- labelb[1] = %s' % labelb[1])
+            print(' -- input_tensors = %s' % input_tensors)
+            
 
         random.seed(6)
         image_tensor, label_tensor = data_generator.make_data_tensor(train=False)
@@ -349,13 +382,40 @@ def main():
         labela = tf.slice(label_tensor, [0,0,0], [-1,num_classes*FLAGS.update_batch_size, -1])
         labelb = tf.slice(label_tensor, [0,num_classes*FLAGS.update_batch_size, 0], [-1,-1,-1])
         metaval_input_tensors = {'inputa': inputa, 'inputb': inputb, 'labela': labela, 'labelb': labelb}
+        print(' -- RANDOM.SEED = 6')
+        print(' -- image_tensor = %s' % image_tensor)
+        print(' -- label_tensor = %s' % label_tensor)
+        print(' -- inputa = %s' % inputa)
+        print(' -- inputa[0] = %s' % inputa[0])
+        print(' -- inputa[0,:] = %s' % inputa[0,:].shape)
+        print(' -- inputa[0,1] = %s' % inputa[0,1].shape)
+        print(' -- inputa[0,5] = %s' % inputa[0,5].shape)
+        print(' -- inputa[0,10] = %s' % inputa[0,10])
+        print(' -- inputa[0,10,1] = %s' % inputa[0,10,1])
+        print(' -- inputa[0,10,6] = %s' % inputa[0,10,6])
+        print(' -- inputa[0,10,1111] = %s' % inputa[0,10,1111])
+        print(' -- inputb = %s' % inputb)
+        print(' -- labela = %s' % labela)
+        print(' -- labela[0] = %s' % labela[0])
+        print(' -- labela[0,1] = %s' % labela[0,1])
+        print(' -- labela[0,2] = %s' % labela[0,2])
+        print(' -- labelb = %s' % labelb)
+        print(' -- labelb[0] = %s' % labelb[0])
+        print(' -- labelb[0,1] = %s' % labelb[0,1])
+        print(' -- labelb[0,2] = %s' % labelb[0,2])
+        print(' -- metaval_input_tensors = %s' % metaval_input_tensors)
     else:
         tf_data_load = False
         input_tensors = None
-
+    
+    print(' -- LABELA:', labela)
+    print(' -- LABELB:', labelb)
+    print(' -- metaval_input_tensors:', metaval_input_tensors)
     model = MAML(dim_input, dim_output, test_num_updates=test_num_updates)
+    print(' -- model imported = MAML')
     if FLAGS.train or not tf_data_load:
         model.construct_model(input_tensors=input_tensors, prefix='metatrain_')
+        print(' -- Model.constructed.')
     if tf_data_load:
         model.construct_model(input_tensors=metaval_input_tensors, prefix='metaval_')
     model.summ_op = tf.summary.merge_all()
@@ -412,6 +472,7 @@ def main():
         train(model, saver, sess, exp_string, data_generator, resume_itr)
     else:
         test(model, saver, sess, exp_string, data_generator, test_num_updates)
+
     print('\n ** FINISHED! *************************')
 
 if __name__ == "__main__":
