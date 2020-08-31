@@ -37,10 +37,12 @@ class MAML:
             if FLAGS.conv:
                 self.dim_hidden = FLAGS.num_filters
                 self.forward = self.forward_conv
+                print(' ** PRINTING WEIGHTS - flags.conv:', self.forward)
                 self.construct_weights = self.construct_conv_weights
             else:
                 self.dim_hidden = [256, 128, 64, 64]
                 self.forward=self.forward_fc
+                print(' ** PRINTING WEIGHTS - forward-fc:', self.forward)
                 self.construct_weights = self.construct_fc_weights
             if FLAGS.datasource == 'miniimagenet':
                 self.channels = 3
@@ -226,7 +228,7 @@ class MAML:
         return weights
 
     def forward_conv(self, inp, weights, reuse=False, scope=''):
-        print(' ** Forward_conv being applied...')
+        print(' -- Forward_conv...')
         # reuse is for the normalization parameters.
         channels = self.channels
         inp = tf.reshape(inp, [-1, self.img_size, self.img_size, channels])
@@ -242,5 +244,4 @@ class MAML:
             hidden4 = tf.reduce_mean(hidden4, [1, 2])
 
         return tf.matmul(hidden4, weights['w5']) + weights['b5']
-
 
