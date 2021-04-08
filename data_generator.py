@@ -3,6 +3,7 @@ import numpy as np
 import os
 import random
 import tensorflow as tf
+import sys
 
 from tensorflow.python.platform import flags
 from utils import get_images
@@ -34,7 +35,7 @@ class DataGenerator(object):
             self.dim_output = 1
         elif 'omniglot' in FLAGS.datasource:
             self.num_classes = config.get('num_classes', FLAGS.num_classes)
-            self.img_size = config.get('img_size', (28, 28))
+            self.img_size = config.get('img_size'f, (28, 28))
             self.dim_input = np.prod(self.img_size)
             self.dim_output = self.num_classes
             # data that is pre-resized using PIL with lanczos filter
@@ -78,9 +79,10 @@ class DataGenerator(object):
                 for label in os.listdir(metaval_folder) \
                 if os.path.isdir(os.path.join(metaval_folder, label)) \
                 ]
+            print(' -- metaval_folders: ', metaval_folders)
             print(' ** Checking if data source is reckognized...')
             self.metatrain_character_folders = metatrain_folders
-            self.metaval_character_folders = metaval_folders
+            self.metaval_character_folders = metaval_folders           
             self.rotations = config.get('rotations', [0])
         else:
             raise ValueError('Unrecognized data source')
@@ -94,31 +96,44 @@ class DataGenerator(object):
             num_total_batches = 200000
         else:
             folders = self.metaval_character_folders
+            print(' -- folders: ', folders) 
+            ####################################
+            #testefol = self.metaval_character_folders
+            #print(' -- testelos: ', testelos)
             num_total_batches = 600
 
         # make list of files
         print(' ** Generating filenames....')
         all_filenames = []
+        print(' -- folders: ', folders)
         for _ in range(num_total_batches):
             sampled_character_folders = random.sample(folders, self.num_classes)
             random.shuffle(sampled_character_folders)
             labels_and_images = get_images(sampled_character_folders, range(self.num_classes), nb_samples=self.num_samples_per_class, shuffle=False)
+            #print(' -- labels_and_images:', labels_and_images)   #LISTA DE DIRETÓRIOS ONDE ESTÃO AS IMAGENS, VEJA: labels_and_images: [(0, './data/miniImagenet/test/n02/img_Y_369.jpg'), (0, './data/miniImagenet/test/n02/img_Y_730.jpg'), 
             # make sure the above isn't randomized order
             labels = [li[0] for li in labels_and_images]
+            #print(' -- labels:', labels)
             filenames = [li[1] for li in labels_and_images]
             all_filenames.extend(filenames)
 
+        #print(' -- allfilenames: ', all_filenames)
         print(' ** Generating filename queue....')
         # make queue for tensorflow to read from
         filename_queue = tf.train.string_input_producer(tf.convert_to_tensor(all_filenames), shuffle=False)
         print(' ** Generating image processing ops')
         image_reader = tf.WholeFileReader()
         _, image_file = image_reader.read(filename_queue)
+        print(' -- image_reader = ', image_reader)
         if FLAGS.datasource == 'miniimagenet':
             image = tf.image.decode_jpeg(image_file, channels=3)
+            print(' -- image = ', image)
             image.set_shape((self.img_size[0],self.img_size[1],3))
+            print(' -- image = ', image)
             image = tf.reshape(image, [self.dim_input])
+            print(' -- image = ', image)
             image = tf.cast(image, tf.float32) / 255.0
+            print(' -- image = ', image)
         else:
             image = tf.image.decode_png(image_file)
             image.set_shape((self.img_size[0],self.img_size[1],1))
@@ -136,6 +151,7 @@ class DataGenerator(object):
                 num_threads=num_preprocess_threads,
                 capacity=min_queue_examples + 3 * batch_image_size,
                 )
+        print(' -- images = ', images)
         all_image_batches, all_label_batches = [], []
         print(' ** Manipulating image data to be right shape')
         for i in range(self.batch_size):
@@ -166,10 +182,14 @@ class DataGenerator(object):
         all_image_batches = tf.stack(all_image_batches)
         all_label_batches = tf.stack(all_label_batches)
         all_label_batches = tf.one_hot(all_label_batches, self.num_classes)
-        print(' ** Data tensor generation complete.')
+        print(' -- all_image_batches', all_image_batches)
+        part = all_image_batches[0,0:40,]
+        tf.print(' -- part: ', part, output_stream=sys.stdout)
+        print(' ** Data tensor generation COMPLETE!')
         return all_image_batches, all_label_batches
 
     def generate_sinusoid_batch(self, train=True, input_idx=None):
+        print(' ** GENERATING DEF BEING USED!')
         # Note train arg is not used (but it is used for omniglot method.
         # input_idx is used during qualitative testing --the number of examples used for the grad update
         amp = np.random.uniform(self.amp_range[0], self.amp_range[1], [self.batch_size])

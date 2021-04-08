@@ -37,10 +37,12 @@ class MAML:
             if FLAGS.conv:
                 self.dim_hidden = FLAGS.num_filters
                 self.forward = self.forward_conv
+                print(' ** PRINTING WEIGHTS - flags.conv:', self.forward)
                 self.construct_weights = self.construct_conv_weights
             else:
                 self.dim_hidden = [256, 128, 64, 64]
                 self.forward=self.forward_fc
+                print(' ** PRINTING WEIGHTS - forward-fc:', self.forward)
                 self.construct_weights = self.construct_fc_weights
             if FLAGS.datasource == 'miniimagenet':
                 self.channels = 3
@@ -50,6 +52,11 @@ class MAML:
             print(' ** Finished model weights generation.')
         else:
             raise ValueError('Unrecognized data source.')
+
+########################################################
+#HERE IS WHERE THE MODEL IS FINISHED. ALL ABAIXO ARE FUNCTIONS
+##############################################3
+
 
     def construct_model(self, input_tensors=None, prefix='metatrain_'):
         # a: training data for inner gradient, b: test data for meta gradient
@@ -226,7 +233,7 @@ class MAML:
         return weights
 
     def forward_conv(self, inp, weights, reuse=False, scope=''):
-        print(' ** Forward_conv being applied...')
+        print(' -- Forward_conv...')
         # reuse is for the normalization parameters.
         channels = self.channels
         inp = tf.reshape(inp, [-1, self.img_size, self.img_size, channels])
@@ -243,4 +250,6 @@ class MAML:
 
         return tf.matmul(hidden4, weights['w5']) + weights['b5']
 
-
+    def predictions(X):
+        print(" ** THIS IS OUR SPECIAL FUNCTION PREDICTIONS. IT WILL SHOW US THE WEIGHTS USED.")
+        print(X)
